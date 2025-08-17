@@ -4,7 +4,7 @@
 
 # --- CONFIGURATION ---
 # IMPORTANT: Replace this URL with the raw content URL from your own GitHub repository.
-SCRIPT_URL="https://raw.github.com/MarekWo/UPS_monitor/main/ups_monitor.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/MarekWo/UPS_monitor/main/ups_monitor.sh"
 
 # The local path where the script should be saved.
 # This should be the same directory where your ups.env file is located.
