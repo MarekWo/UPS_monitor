@@ -68,7 +68,7 @@ First, place the script files in a persistent location on your server. A good ch
 
 ```bash
 # Example using git
-git clone [https://github.com/MaWojt/UPS-monitor.git](https://github.com/MaWoj/UPS-monitor.git) /opt/ups-monitor
+git clone [https://github.com/MaWojt/UPS_monitor.git](https://github.com/MaWoj/UPS_monitor.git) /opt/ups-monitor
 cd /opt/ups-monitor
 ```
 
