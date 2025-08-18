@@ -64,23 +64,36 @@ Ensure the following packages are installed on your system:
 
 ### Step 1: Clone or Download the Repository
 
-First, place the script files in a persistent location on your server. A good choice is `/opt/ups-monitor` or `/usr/local/bin/ups-monitor`.
+First, place the script files in a persistent location on your server.
 
+**For most Linux systems (Proxmox, Debian, etc.), a good choice is `/opt/ups-monitor`:**
 ```bash
 # Example using git
 git clone https://github.com/MarekWo/UPS_monitor.git /opt/ups-monitor
 cd /opt/ups-monitor
 ```
 
+**For Synology DSM Users:**
+The Synology operating system does not have an `/opt` directory. The best practice is to place scripts on a data volume to ensure they survive system updates. The recommended location is a dedicated `scripts` folder on `volume1`.
+
+```bash
+# Create the directory on your data volume
+sudo mkdir -p /volume1/scripts/ups-monitor
+
+# Clone the repository into the new directory
+git clone https://github.com/MarekWo/UPS_monitor.git /volume1/scripts/ups-monitor
+cd /volume1/scripts/ups-monitor
+```
+
 ### Step 2: Create and Customize the Configuration
 
-Create your configuration file by copying the provided example.
+Create your local configuration file by copying the provided example. This file will be ignored by git, so your settings are safe.
 
 ```bash
 cp ups.env.example ups.env
 ```
 
-Now, edit `ups.env` with your specific settings:
+Now, edit the newly created `ups.env` with your specific settings:
 
 ```ini
 # ups.env
@@ -105,20 +118,35 @@ chmod +x update.sh
 
 The script needs to run every minute to be effective. You must schedule it to run as the **`root`** user, as the `shutdown` command requires root privileges.
 
+**For most Linux systems:**
 Open the root user's crontab for editing:
 
 ```bash
 sudo crontab -e
 ```
 
-Add the following line at the bottom, then save and exit:
+Add the following line, making sure the path is correct for your installation, then save and exit:
 
 ```crontab
 # Run the UPS monitor script every minute
 * * * * * /opt/ups-monitor/ups_monitor.sh
 ```
 
-**Note for Synology Users:** Use the `Control Panel > Task Scheduler`. Create a new "Scheduled Task" -\> "User-defined script". Set the user to `root` and configure it to run every 1 minute on the "Schedule" tab.
+**For Synology DSM Users:**
+
+1.  Go to `Control Panel` \> `Task Scheduler`.
+2.  Click `Create` \> `Scheduled Task` \> `User-defined script`.
+3.  In the **General** tab:
+      * Task: `UPS Monitor`
+      * User: `root`
+4.  In the **Schedule** tab:
+      * Run on the following days: `Daily`
+      * Frequency: `Every 1 minute`
+5.  In the **Task Settings** tab, enter the full path to the script in the `Run command` box:
+    ```
+    bash /volume1/scripts/ups-monitor/ups_monitor.sh
+    ```
+6.  Click `OK` to save the task.
 
 -----
 
@@ -127,17 +155,13 @@ Add the following line at the bottom, then save and exit:
 To update the script to the latest version from your repository, simply run the `update.sh` script.
 
 ```bash
-# Navigate to the script directory and run the updater
-cd /opt/ups-monitor
+# Navigate to your script directory and run the updater
+# (e.g., /opt/ups-monitor or /volume1/scripts/ups-monitor)
+cd /path/to/your/script/directory
 ./update.sh
 ```
 
-You can also automate this by adding a second cron job to run the updater daily, for example, at 3:00 AM.
-
-```crontab
-# Check for script updates once a day at 3:00 AM
-0 3 * * * /opt/ups-monitor/update.sh
-```
+You can also automate this by adding a second cron job (or another Task Scheduler entry on Synology) to run the updater daily, for example, at 3:00 AM.
 
 -----
 
@@ -145,15 +169,10 @@ You can also automate this by adding a second cron job to run the updater daily,
 
 After setup, you can test the script's functionality:
 
-1.  **Run it manually:** Execute `/opt/ups-monitor/ups_monitor.sh` and check for any errors.
-2.  **Check the logs:** On most systems, you can view the script's output in the system log.
-    ```bash
-    # For systemd-based systems (Debian, Proxmox, modern Ubuntu)
-    journalctl -f | grep UPS_Shutdown_Script
-
-    # For older systems or Synology
-    tail -f /var/log/messages | grep UPS_Shutdown_Script
-    ```
+1.  **Run it manually:** Execute `/path/to/your/script/ups_monitor.sh` and check for any errors.
+2.  **Check the logs:**
+      * **For systemd-based systems (Debian, Proxmox):** `journalctl -f | grep UPS_Shutdown_Script`
+      * **For Synology DSM:** Open the `Log Center` application or check the log file directly with `tail -f /var/log/messages | grep UPS_Shutdown_Script`
 3.  **Simulate a power failure:** Change the state of your (dummy) NUT server to `OB LB` and watch the logs. The script should log that the countdown has started.
 4.  **Simulate power restoration:** Before the delay is over, change the NUT server state back to `OL`. The script should log that the shutdown has been cancelled.
 
@@ -167,3 +186,4 @@ This is a community-driven project. If you have an idea for an improvement or fi
 
 This project is licensed under the MIT License. See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
 
+```
