@@ -61,6 +61,7 @@ Ensure the following packages are installed on your system:
 * `cron` or another task scheduler
 * `curl` (for the update script)
 * `nut-client` (or equivalent package that provides the `upsc` command)
+* `git` for cloning the project from GitHub
 
 ### Step 1: Clone or Download the Repository
 
