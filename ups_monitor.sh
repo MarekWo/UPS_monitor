@@ -2,7 +2,7 @@
 
 ################################################################################
 #
-# Universal UPS Status Monitor (v3.0)
+# Universal UPS Status Monitor (v3.1.0)
 #
 # This script monitors a NUT (Network UPS Tools) server and safely shuts down
 # the local system in case of a power failure. It is designed to be run from
@@ -13,7 +13,7 @@
 # - Shutdown cancellation if power is restored.
 # - Stateful operation using a flag file.
 # - External configuration via an .env file.
-# - Detailed logging to syslog.
+# - Universal logging for Synology DSM and standard Linux.
 #
 ################################################################################
 
@@ -25,7 +25,7 @@ CONFIG_FILE="$SCRIPT_DIR/ups.env"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 else
-    # Log an error and exit if the config file is missing.
+    # Use standard logger here as the custom function isn't defined yet.
     logger -t "UPS_Monitor_Core" "CRITICAL ERROR: Configuration file not found at $CONFIG_FILE. Exiting."
     exit 1
 fi
@@ -35,6 +35,24 @@ UPS_NAME="${UPS_NAME:-ups@localhost}"
 SHUTDOWN_DELAY_MINUTES="${SHUTDOWN_DELAY_MINUTES:-5}"
 FLAG_FILE="${FLAG_FILE:-/tmp/ups_shutdown_pending.flag}"
 LOG_TAG="${LOG_TAG:-UPS_Shutdown_Script}"
+
+# --- Universal logging function ---
+send_log() {
+    # Arguments: level message
+    # level: info, warn, err
+    local level="${1:-info}"
+    shift
+    local msg="$*"
+
+    # Check for Synology DSM environment
+    if [ -x /usr/syno/bin/synologset1 ]; then
+        # Use Synology's specific logging tool
+        /usr/syno/bin/synologset1 sys "$level" 0x11100000 "$msg"
+    else
+        # Use standard logger for other Linux systems, mapping level to priority
+        logger -t "$LOG_TAG" -p "user.$level" "$msg"
+    fi
+}
 
 # --- MAIN SCRIPT LOGIC - DO NOT EDIT BELOW ---
 
@@ -46,7 +64,7 @@ CURRENT_STATUS=$(upsc "$UPS_NAME" ups.status 2>/dev/null)
 
 # Check if the connection to the UPS server was successful
 if [ -z "$CURRENT_STATUS" ]; then
-    logger -t "$LOG_TAG" "ERROR: Could not get status from UPS server ($UPS_NAME). Check connection."
+    send_log "err" "ERROR: Could not get status from UPS server ($UPS_NAME). Check connection."
     exit 1
 fi
 
@@ -57,7 +75,7 @@ if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
     if [ ! -f "$FLAG_FILE" ]; then
         # Flag file does not exist - this is the FIRST detection of a low battery state.
         # Start the countdown.
-        logger -t "$LOG_TAG" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
+        send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
         
         # Write the current timestamp (seconds since epoch) to the flag file.
         date +%s > "$FLAG_FILE"
@@ -71,7 +89,7 @@ if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
 
         if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
             # The delay has passed. Execute immediate shutdown.
-            logger -t "$LOG_TAG" "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
+            send_log "err" "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
             
             # Remove the flag file before shutting down
             rm -f "$FLAG_FILE"
@@ -88,7 +106,7 @@ elif [[ "$CURRENT_STATUS" == "OL" ]]; then
     if [ -f "$FLAG_FILE" ]; then
         # Flag file exists - this means a countdown was in progress.
         # Cancel it.
-        logger -t "$LOG_TAG" "Mains power has been restored. Cancelling shutdown countdown."
+        send_log "info" "Mains power has been restored. Cancelling shutdown countdown."
         
         # Cancellation is as simple as removing the flag file.
         rm -f "$FLAG_FILE"
