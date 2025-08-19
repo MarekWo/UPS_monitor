@@ -1,6 +1,6 @@
 # Universal NUT UPS Shutdown Script
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A robust, universal, and configurable Bash script that safely shuts down a Linux-based system by monitoring a remote NUT (Network UPS Tools) server. It's designed to be a reliable replacement for inflexible or buggy built-in UPS clients.
 
