@@ -36,6 +36,8 @@ This method provides predictable, robust, and platform-agnostic protection again
 * **Easy to Configure:** All settings are managed in a simple, external `ups.env` file.
 * **Centralized Updates:** Includes an optional update script to pull the latest version from your repository.
 
+This project is the perfect companion to the **[PowerManager](https://github.com/MarekWo/PowerManager)** server script, which simulates a NUT (Network UPS Tools) server's status based on network conditions.
+
 ---
 
 ## 🔧 How It Works
