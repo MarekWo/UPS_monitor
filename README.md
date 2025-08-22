@@ -1,9 +1,9 @@
-# Universal NUT UPS Shutdown Script
+# Universal NUT UPS Shutdown Script (UPS_Monitor)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A robust, universal, and configurable Bash script that safely shuts down a Linux-based system by monitoring a remote NUT (Network UPS Tools) server. It's designed to be a reliable replacement for inflexible or buggy built-in UPS clients.
-
+It now includes an optional "Hub Mode" for centrally managing the configuration of multiple clients from a single API endpoint.
 ---
 
 ## 📜 The Problem
@@ -29,26 +29,31 @@ This method provides predictable, robust, and platform-agnostic protection again
 ## 🚀 Features
 
 * **Reliable Shutdown:** Uses the low-level `shutdown` command, avoiding complex and fragile "standby" modes.
+* **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`UPS_NAME`, `SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
 * **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve.
 * **Smart Cancellation:** Automatically cancels the pending shutdown if mains power is restored.
+* **Resilient Fallback:** If the central API hub is unreachable, the script automatically falls back to using its last known good configuration from the local `ups.env` file, ensuring uninterrupted protection.
 * **Universal Compatibility:** Works on virtually any Linux-based system with Bash and NUT client tools (Synology DSM, Proxmox, Debian, Ubuntu, etc.).
 * **Lightweight & Stateless:** Has minimal dependencies and uses a simple flag file for state management, requiring no complex daemons.
-* **Easy to Configure:** All settings are managed in a simple, external `ups.env` file.
-* **Centralized Updates:** Includes an optional update script to pull the latest version from your repository.
+* **Easy to Configure:** All settings are managed in a simple, external `ups.env` file for standalone mode, with an override for hub mode.
+* **Automated Updates:** Includes an optional update script to pull the latest version from the official repository.
 
-This project is the perfect companion to the **[PowerManager](https://github.com/MarekWo/PowerManager)** server script, which simulates a NUT (Network UPS Tools) server's status based on network conditions.
+This project is the perfect companion to the **[UPS_Server_Docker](https://github.com/MarekWo/UPS_Server_Docker)** application. The new Hub Mode feature is specifically designed to work with the REST API provided by `UPS_Server_Docker`.
 
 ---
 
 ## 🔧 How It Works
 
-The script's logic is managed by a state machine that runs every minute:
+The script's logic runs every minute and follows these steps:
 
-1.  **Check Status:** The script calls `upsc` to get the `ups.status` variable from the NUT server.
-2.  **Detect Low Battery:** If the status is `OB LB` (On Battery, Low Battery), the script checks for the existence of a flag file (`/tmp/ups_shutdown_pending.flag`).
+1.  **Load Configuration (Hub or Local):** The script first checks if `API_SERVER_URI` and `API_TOKEN` are defined in `ups.env`.
+    *   **If yes (Hub Mode):** It attempts to fetch its configuration from the central API. If successful, it uses the fetched settings and caches them back to `ups.env`. This ensures that if the API is unreachable on a subsequent run, the script can use the last known good configuration.
+    *   **If no (Standalone Mode):** It uses the configuration defined directly in the `ups.env` file.
+2.  **Check UPS Status:** The script calls `upsc` to get the `ups.status` variable from the configured NUT server.
+3.  **Detect Low Battery:** If the status is `OB LB` (On Battery, Low Battery), the script checks for the existence of a flag file (`/tmp/ups_shutdown_pending.flag`).
     * If the flag **doesn't exist**, it's the first sign of trouble. The script writes the current timestamp into the flag file and logs that the countdown has begun.
     * If the flag **exists**, the script calculates the time elapsed since the timestamp in the file. If the elapsed time exceeds the configured delay, it executes `shutdown -h now`.
-3.  **Detect Power Restoration:** If the status is `OL` (On Line) and the flag file **exists**, the script knows a shutdown was pending. It logs the cancellation and simply deletes the flag file, effectively resetting the state.
+4.  **Detect Power Restoration:** If the status is `OL` (On Line) and the flag file **exists**, the script knows a shutdown was pending. It logs the cancellation and simply deletes the flag file, effectively resetting the state.
 
 ---
 
@@ -59,11 +64,12 @@ Follow these steps to set up the monitor on a new system.
 ### Prerequisites
 
 Ensure the following packages are installed on your system:
-* `bash` (usually installed by default)
-* `cron` or another task scheduler
-* `curl` (for the update script)
-* `nut-client` (or equivalent package that provides the `upsc` command)
-* `git` for cloning the project from GitHub
+*   `bash` (usually installed by default)
+*   `cron` or another task scheduler
+*   `curl` (for hub mode and the update script)
+*   `jq` (required for hub mode to parse API responses)
+*   `nut-client` (or equivalent package that provides the `upsc` command)
+*   `git` for cloning the project from GitHub
 
 ### Step 1: Clone or Download the Repository
 
@@ -98,14 +104,23 @@ cp ups.env.example ups.env
 
 Now, edit the newly created `ups.env` with your specific settings:
 
-```ini
+```bash
 # ups.env
+
+# --- Standalone Mode Configuration ---
+# Used if the API Hub is not configured or unreachable.
 
 # The identifier for the UPS on your NUT server (<upsname>@<hostname>).
 UPS_NAME="ups@192.168.1.50"
 
 # The delay in minutes before shutdown after a low battery is detected.
 SHUTDOWN_DELAY_MINUTES=5
+
+# --- Optional: Hub Mode Configuration ---
+# To enable, provide the URI and a Bearer token for your central config server.
+# This feature is designed to work with the UPS_Server_Docker project.
+# API_SERVER_URI="http://192.168.1.100:8000/api/ups"
+# API_TOKEN="your_secret_api_token_here"
 ```
 
 ### Step 3: Set Permissions
