@@ -118,7 +118,7 @@ if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
     fi
 elif [[ "$CURRENT_STATUS" == "OL" ]]; then
     if [ -f "$FLAG_FILE" ]; then
-        send_log "info" "Main power has been restored. Cancelling shutdown countdown."
+        send_log "info" "Mains power has been restored. Cancelling shutdown countdown."
         rm -f "$FLAG_FILE"
     fi
 fi
