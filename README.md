@@ -4,7 +4,6 @@
 
 A robust, universal, and configurable Bash script that safely shuts down a Linux-based system by monitoring a remote NUT (Network UPS Tools) server. It's designed to be a reliable replacement for inflexible or buggy built-in UPS clients.
 It now includes an optional "Hub Mode" for centrally managing the configuration of multiple clients from a single API endpoint.
----
 
 ## 📜 The Problem
 
