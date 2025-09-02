@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 ################################################################################
 #
-# Universal UPS Status Monitor (v4.0.1 - Caching Hub Edition)
+# Universal UPS Status Monitor (v4.1.0 - Status Reporting Edition)
 #
 # Features:
 # - Configurable shutdown delay.
@@ -17,6 +17,7 @@
 # New in version 4.0.1:
 # - Updates the local ups.env file to cache the last successful config.
 # - Reads uppercase variable names from the API response.
+# - NEW: Reports client status back to the server
 #
 ################################################################################
 
@@ -52,6 +53,29 @@ send_log() {
 # --- Function to get the primary IP of this machine ---
 get_primary_ip() {
     ip route get 1.1.1.1 | awk '{print $7}' | head -n 1
+}
+
+# Function to send API status
+send_status_update() {
+    local status="$1"
+    local remaining_seconds="${2:-null}"
+    local shutdown_delay="${3:-null}"
+    
+    if [[ -n "$API_SERVER_URI" && -n "$API_TOKEN" ]]; then
+        local client_ip
+        client_ip=$(get_primary_ip)
+        local api_url="${API_SERVER_URI}/status"
+        
+        # JSON payload creation
+        local payload
+        payload=$(printf '{"ip": "%s", "status": "%s", "remaining_seconds": %s, "shutdown_delay": %s}' \
+            "$client_ip" "$status" "$remaining_seconds" "$shutdown_delay")
+        
+        # Sending data in the background to avoid blocking the script
+        curl -s -X POST -H "Content-Type: application/json" \
+             -H "Authorization: Bearer ${API_TOKEN}" \
+             -d "$payload" "$api_url" &
+    fi
 }
 
 # --- Configuration Fetching Logic ---
@@ -103,23 +127,31 @@ fi
 
 if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
     if [ ! -f "$FLAG_FILE" ]; then
-        send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
+        send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown..."
         date +%s > "$FLAG_FILE"
+        send_status_update "shutdown_pending" "$SHUTDOWN_DELAY_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
     else
         START_TIME=$(cat "$FLAG_FILE")
         CURRENT_TIME=$(date +%s)
         ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+        REMAINING_SECONDS=$((SHUTDOWN_DELAY_SECONDS - ELAPSED_TIME))
+
         if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
-            send_log "err" "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
+            send_log "err" "Shutdown delay passed. Shutting down NOW."
+            send_status_update "shutting_down"
             rm -f "$FLAG_FILE"
             /sbin/shutdown -h now
             exit 0
+        else
+            # Wysyłaj aktualizację co minutę
+            send_status_update "shutdown_pending" "$REMAINING_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
         fi
     fi
 elif [[ "$CURRENT_STATUS" == "OL" ]]; then
     if [ -f "$FLAG_FILE" ]; then
-        send_log "info" "Mains power has been restored. Cancelling shutdown countdown."
+        send_log "info" "Mains power restored. Cancelling shutdown."
         rm -f "$FLAG_FILE"
+        send_status_update "online"
     fi
 fi
 

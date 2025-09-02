@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Universal UPS Status Monitor for Windows (v4.0.2 - Caching Hub Edition)
-    Monitors a remote NUT UPS server via a REST API and safely shuts down the local machine.
+    Universal UPS Status Monitor for Windows (v4.1.0 - Caching Hub Edition)
+    Monitors a remote NUT UPS server via REST API and reports status back to server.
 .DESCRIPTION
     A robust, universal, and configurable PowerShell script that safely shuts down a Windows-based
     system by monitoring a remote NUT (Network UPS Tools) server via a REST API. It is designed
@@ -17,7 +17,7 @@
     - Caching: Updates the local ups.env file with the last successful config from the hub.
 .NOTES
     Author: MarekWo
-    Version: 4.0.2
+    Version: 4.1.0
     Requires: Windows PowerShell 5.1 or later.
     Execution Policy: Must be run with an execution policy that allows scripts (e.g., RemoteSigned).
     Permissions: Must be run as an Administrator to write to the Event Log and to initiate shutdown.
@@ -40,6 +40,7 @@ $FLAG_FILE = "$env:TEMP\ups_shutdown_pending.flag"
 $LOG_TAG = "UPS_Shutdown_Script"
 $API_SERVER_URI = $null
 $API_TOKEN = $null
+$ShutdownDelaySeconds = [int]$SHUTDOWN_DELAY_MINUTES * 60
 
 # PowerShell equivalent of 'source ups.env'
 if (Test-Path $ConfigFile) {
@@ -138,6 +139,38 @@ function Update-LocalConfig {
     }
 }
 
+# --- Function to send status update to API ---
+function Send-StatusUpdate {
+    param(
+        [string]$Status,
+        [int]$RemainingSeconds,
+        [int]$ShutdownDelay
+    )
+    
+    if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
+        $clientIp = Get-PrimaryIp
+        $apiUrl = "$API_SERVER_URI/status"
+        $headers = @{ "Authorization" = "Bearer $API_TOKEN" }
+        
+        $payload = @{
+            ip = $clientIp
+            status = $Status
+        }
+        if ($RemainingSeconds) { $payload.remaining_seconds = $RemainingSeconds }
+        if ($ShutdownDelay) { $payload.shutdown_delay = $ShutdownDelay }
+        
+        $jsonPayload = $payload | ConvertTo-Json
+        
+        # Uruchom w tle jako zadanie, aby nie blokować
+        Start-Job -ScriptBlock {
+            param($apiUrl, $headers, $jsonPayload)
+            try {
+                Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Post -Body $jsonPayload -ContentType "application/json" -ErrorAction Stop
+            } catch {}
+        } -ArgumentList $apiUrl, $headers, $jsonPayload | Out-Null
+    }
+}
+
 # --- Configuration Fetching Logic (Hub Mode) ---
 if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
     Write-Log -Level "Information" -Message "API server is configured. Attempting to fetch remote configuration."
@@ -224,28 +257,38 @@ if ($CurrentStatus -eq "OB LB") {
         Write-Log -Level "Warning" -Message "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
         $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $startTime | Set-Content $FLAG_FILE
+        # Send status update about the countdown
+        Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
     }
     else {
         try {
             $startTime = [int64](Get-Content $FLAG_FILE -ErrorAction Stop)
             $currentTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
             $elapsedTime = $currentTime - $startTime
-            $remainingTime = $ShutdownDelaySeconds - $elapsedTime
+            $remainingSeconds = $ShutdownDelaySeconds - $elapsedTime
             
             if ($elapsedTime -ge $ShutdownDelaySeconds) {
-                Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
+                Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."                
+                # Send-StatusUpdate -Status "shutting_down"
+                Send-StatusUpdate -Status "shutting_down"
                 Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
                 Stop-Computer -Force
                 Exit 0
             }
             else {
-                Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingTime / 60)) minutes remaining."
+                Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingSeconds / 60)) minutes remaining."
+                # Update status with remaining time
+                Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $remainingSeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
             }
         }
         catch {
+            # Restored catch block in case flag file read fails
             Write-Log -Level "Warning" -Message "Error reading flag file. Recreating with current timestamp."
             $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
             $startTime | Set-Content $FLAG_FILE
+            
+            # Send Status Update about the countdown (again)
+            Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
         }
     }
 }
@@ -254,13 +297,18 @@ elseif ($CurrentStatus -eq "OL") {
     if (Test-Path $FLAG_FILE) {
         Write-Log -Level "Information" -Message "Main power has been restored. Cancelling shutdown countdown."
         Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+        
+        # Send-StatusUpdate -Status "online"
+        Send-StatusUpdate -Status "online"
     }
 }
+# Handle other statuses (OB without LB, etc.) - PRZYWRÓCONY BLOK
 else {
-    # Handle other statuses (OB without LB, etc.)
     if (Test-Path $FLAG_FILE) {
         Write-Log -Level "Information" -Message "UPS status changed to '$CurrentStatus'. Cancelling any pending shutdown."
-        Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+        Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue        
+        # Send-StatusUpdate -Status "online" - cancelling
+        Send-StatusUpdate -Status "online"
     }
 }
 
