@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Universal UPS Status Monitor for Windows (v4.1.0 - Caching Hub Edition)
+    Universal UPS Status Monitor for Windows (v4.1.1 - Status sending version)
     Monitors a remote NUT UPS server via REST API and reports status back to server.
 .DESCRIPTION
     A robust, universal, and configurable PowerShell script that safely shuts down a Windows-based
@@ -17,7 +17,7 @@
     - Caching: Updates the local ups.env file with the last successful config from the hub.
 .NOTES
     Author: MarekWo
-    Version: 4.1.0
+    Version: 4.1.1
     Requires: Windows PowerShell 5.1 or later.
     Execution Policy: Must be run with an execution policy that allows scripts (e.g., RemoteSigned).
     Permissions: Must be run as an Administrator to write to the Event Log and to initiate shutdown.
@@ -149,6 +149,11 @@ function Send-StatusUpdate {
     
     if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
         $clientIp = Get-PrimaryIp
+        if (-not $clientIp) {
+            Write-Log -Level "Warning" -Message "Cannot send status update because client IP is unknown."
+            return
+        }
+        
         $apiUrl = "$API_SERVER_URI/status"
         $headers = @{ "Authorization" = "Bearer $API_TOKEN" }
         
@@ -156,18 +161,25 @@ function Send-StatusUpdate {
             ip = $clientIp
             status = $Status
         }
-        if ($RemainingSeconds) { $payload.remaining_seconds = $RemainingSeconds }
-        if ($ShutdownDelay) { $payload.shutdown_delay = $ShutdownDelay }
+        
+        # Add optional parameters to the payload only if they have been provided.
+        # This is a cleaner way to handle optional function arguments in PowerShell.
+        if ($PSBoundParameters.ContainsKey('RemainingSeconds')) { $payload.remaining_seconds = $RemainingSeconds }
+        if ($PSBoundParameters.ContainsKey('ShutdownDelay')) { $payload.shutdown_delay = $ShutdownDelay }
         
         $jsonPayload = $payload | ConvertTo-Json
         
-        # Uruchom w tle jako zadanie, aby nie blokować
-        Start-Job -ScriptBlock {
-            param($apiUrl, $headers, $jsonPayload)
-            try {
-                Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Post -Body $jsonPayload -ContentType "application/json" -ErrorAction Stop
-            } catch {}
-        } -ArgumentList $apiUrl, $headers, $jsonPayload | Out-Null
+        # Execute the request directly (synchronously) instead of using Start-Job.
+        # This is more reliable for short-lived scripts running in Task Scheduler,
+        # as it ensures the script waits for the API call to complete before exiting.
+        try {
+            Write-Log -Level "Information" -Message "Sending status update to API: $jsonPayload"
+            Invoke-RestMethod -Uri $apiUrl -Headers $headers -Method Post -Body $jsonPayload -ContentType "application/json" -TimeoutSec 10 -ErrorAction Stop
+            Write-Log -Level "Information" -Message "Status update sent successfully."
+        } catch {
+            # Log the specific error message for easier troubleshooting.
+            Write-Log -Level "Error" -Message "Failed to send status update to API. Error: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -302,7 +314,7 @@ elseif ($CurrentStatus -eq "OL") {
         Send-StatusUpdate -Status "online"
     }
 }
-# Handle other statuses (OB without LB, etc.) - PRZYWRÓCONY BLOK
+# Handle other statuses (OB without LB, etc.) 
 else {
     if (Test-Path $FLAG_FILE) {
         Write-Log -Level "Information" -Message "UPS status changed to '$CurrentStatus'. Cancelling any pending shutdown."
