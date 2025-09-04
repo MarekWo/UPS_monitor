@@ -68,24 +68,26 @@ SHUTDOWN_DELAY_MINUTES=10
 
 **Note:** The Windows version requires the API server configuration (`API_SERVER_URI` and `API_TOKEN`) to function properly, as it cannot use the native `upsc` command like the Linux version.
 
-### Step 3: Set PowerShell Execution Policy
+### Step 3: Set PowerShell Execution Policy and Unblock Scripts
 
-By default, Windows restricts running scripts for security. You must set an execution policy that allows the script to run. Running the following command from an **Administrator PowerShell** prompt is a common and safe choice:
+By default, Windows restricts running scripts for security. First, ensure your system's execution policy allows local scripts to run. The following command, run from an **Administrator PowerShell** prompt, is a common and safe choice:
 
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope LocalMachine
 ```
 
-This allows locally created scripts to run but requires scripts downloaded from the internet to be signed.
+Next, because the script files were downloaded from the internet, you must "unblock" them to allow them to run under the `RemoteSigned` policy. This removes the "Mark of the Web" that Windows automatically adds to downloaded files.
 
-**Alternative for more restrictive environments:**
+Run these commands from the script's directory:
+
 ```powershell
-# Allow only scripts in the specific directory
-Set-ExecutionPolicy RemoteSigned -Scope LocalMachine
-# Then sign or unblock the downloaded script
-Unblock-File C:\ProgramData\ups-monitor\ups_monitor.ps1
-Unblock-File C:\ProgramData\ups-monitor\update.ps1
+# In C:\ProgramData\ups-monitor
+Unblock-File .\ups_monitor.ps1
+Unblock-File .\update.ps1
 ```
+
+This approach maintains a high level of security on your system without preventing the monitor scripts from running.
+
 
 ### Step 4: Schedule the Task
 
