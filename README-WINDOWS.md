@@ -1,3 +1,20 @@
+## 🚀 Features
+
+* **Reliable Shutdown:** Uses the low-level `shutdown` command, avoiding complex and fragile "standby" modes.
+* **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`UPS_NAME`, `SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
+* **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve.
+* **Smart Cancellation:** Automatically cancels the pending shutdown if mains power is restored.
+* **Resilient Fallback:** If the central API hub is unreachable, the script automatically falls back to using its last known good configuration from the local `ups.env` file, ensuring uninterrupted protection.
+* **Compatibility:** Works on any Windows machines with Powershell 5.1 or later.
+* **Lightweight & Stateless:** Has minimal dependencies and uses a simple flag file for state management, requiring no complex daemons.
+* **Easy to Configure:** All settings are managed in a simple, external `ups.env` file for standalone mode, with an override for hub mode.
+* **Automated Updates:** Includes an optional update script to pull the latest version from the official repository.
+* **Active Status Reporting:** In Hub Mode, the script reports its status (`online`, `shutdown_pending`) back to the `UPS_Server_Docker` API on every run. This provides a live, accurate view of the client's health in the central dashboard.
+
+---
+
+
+
 ## 🪟 Installation & Configuration for Windows (PowerShell)
 
 Follow these steps to set up the monitor on a Windows system using the PowerShell script (`ups_monitor.ps1`). The logic is identical to the Linux version but adapted for the Windows environment.

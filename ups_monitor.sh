@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 ################################################################################
 #
-# Universal UPS Status Monitor (v4.1.0 - Status Reporting Edition)
+# Universal UPS Status Monitor (v4.2.0 - Status Reporting Edition)
 #
 # Features:
 # - Configurable shutdown delay.
@@ -18,6 +18,8 @@
 # - Updates the local ups.env file to cache the last successful config.
 # - Reads uppercase variable names from the API response.
 # - NEW: Reports client status back to the server
+# New in version 4.2.2:
+# - Report `online` status not only when the power is restored, but always
 #
 ################################################################################
 
@@ -151,8 +153,9 @@ elif [[ "$CURRENT_STATUS" == "OL" ]]; then
     if [ -f "$FLAG_FILE" ]; then
         send_log "info" "Mains power restored. Cancelling shutdown."
         rm -f "$FLAG_FILE"
-        send_status_update "online"
     fi
+    # Always report that the client is online and healthy on every successful run
+    send_status_update "online"
 fi
 
 exit 0

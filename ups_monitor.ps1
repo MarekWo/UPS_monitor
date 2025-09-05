@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Universal UPS Status Monitor for Windows (v4.1.1 - Status sending version)
+    Universal UPS Status Monitor for Windows (v4.2.0)
     Monitors a remote NUT UPS server via REST API and reports status back to server.
 .DESCRIPTION
     A robust, universal, and configurable PowerShell script that safely shuts down a Windows-based
@@ -17,7 +17,7 @@
     - Caching: Updates the local ups.env file with the last successful config from the hub.
 .NOTES
     Author: MarekWo
-    Version: 4.1.1
+    Version: 4.2.0
     Requires: Windows PowerShell 5.1 or later.
     Execution Policy: Must be run with an execution policy that allows scripts (e.g., RemoteSigned).
     Permissions: Must be run as an Administrator to write to the Event Log and to initiate shutdown.
@@ -304,15 +304,14 @@ if ($CurrentStatus -eq "OB LB") {
         }
     }
 }
-# Handle power restoration
+# Handle power restoration and normal online status
 elseif ($CurrentStatus -eq "OL") {
     if (Test-Path $FLAG_FILE) {
         Write-Log -Level "Information" -Message "Main power has been restored. Cancelling shutdown countdown."
         Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
-        
-        # Send-StatusUpdate -Status "online"
-        Send-StatusUpdate -Status "online"
     }
+    # Always report that the client is online and healthy on every successful run when power is OL
+    Send-StatusUpdate -Status "online"
 }
 # Handle other statuses (OB without LB, etc.) 
 else {

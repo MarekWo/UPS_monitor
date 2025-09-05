@@ -36,6 +36,7 @@ This method provides predictable, robust, and platform-agnostic protection again
 * **Lightweight & Stateless:** Has minimal dependencies and uses a simple flag file for state management, requiring no complex daemons.
 * **Easy to Configure:** All settings are managed in a simple, external `ups.env` file for standalone mode, with an override for hub mode.
 * **Automated Updates:** Includes an optional update script to pull the latest version from the official repository.
+* **Active Status Reporting:** In Hub Mode, the script reports its status (`online`, `shutdown_pending`) back to the `UPS_Server_Docker` API on every run. This provides a live, accurate view of the client's health in the central dashboard.
 
 This project is the perfect companion to the **[UPS_Server_Docker](https://github.com/MarekWo/UPS_Server_Docker)** application. The new Hub Mode feature is specifically designed to work with the REST API provided by `UPS_Server_Docker`.
 
