@@ -18,7 +18,7 @@
 # - Updates the local ups.env file to cache the last successful config.
 # - Reads uppercase variable names from the API response.
 # - NEW: Reports client status back to the server
-# New in version 4.2.2:
+# New in version 4.2.0:
 # - Report `online` status not only when the power is restored, but always
 #
 ################################################################################
