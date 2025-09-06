@@ -118,7 +118,8 @@ SHUTDOWN_DELAY_MINUTES=5
 
 # --- Optional: Hub Mode Configuration ---
 # To enable, provide the URI and a Bearer token for your central config server.
-# This feature is designed to work with the UPS_Server_Docker project.
+# This feature is designed to work with the UPS_Server_Docker project. The API_TOKEN
+# value MUST exactly match the API_TOKEN set in the server's power_manager.conf file.
 # API_SERVER_URI="http://192.168.1.100:8000/api/ups"
 # API_TOKEN="your_secret_api_token_here"
 ```
