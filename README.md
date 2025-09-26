@@ -16,7 +16,7 @@ This project was born out of frustration with a common failure mode: upon receiv
 This script bypasses the native, problematic shutdown logic entirely. Instead of relying on the host OS's UPS integration, it uses a simple and direct approach:
 
 1.  It runs periodically via **cron**.
-2.  It directly queries the NUT server using the standard `upsc` command.
+2.  It directly queries the NUT server using the REST API `/upsc` endpoint.
 3.  If a critical `On Battery, Low Battery` state is detected, it initiates a **configurable countdown**.
 4.  If power is restored during the countdown, the shutdown is **cleanly cancelled**.
 5.  If the countdown completes, it executes the universally reliable `/sbin/shutdown -h now` command.
@@ -28,11 +28,11 @@ This method provides predictable, robust, and platform-agnostic protection again
 ## 🚀 Features
 
 * **Reliable Shutdown:** Uses the low-level `shutdown` command, avoiding complex and fragile "standby" modes.
-* **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`UPS_NAME`, `SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
+* **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
 * **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve.
 * **Smart Cancellation:** Automatically cancels the pending shutdown if mains power is restored.
 * **Resilient Fallback:** If the central API hub is unreachable, the script automatically falls back to using its last known good configuration from the local `ups.env` file, ensuring uninterrupted protection.
-* **Universal Compatibility:** Works on virtually any Linux-based system with Bash and NUT client tools (Synology DSM, Proxmox, Debian, Ubuntu, etc.).
+* **Universal Compatibility:** Works on virtually any Linux-based system with Bash, curl and jq (Synology DSM, Proxmox, Debian, Ubuntu, etc.).
 * **Lightweight & Stateless:** Has minimal dependencies and uses a simple flag file for state management, requiring no complex daemons.
 * **Easy to Configure:** All settings are managed in a simple, external `ups.env` file for standalone mode, with an override for hub mode.
 * **Automated Updates:** Includes an optional update script to pull the latest version from the official repository.
@@ -46,10 +46,8 @@ This project is the perfect companion to the **[UPS_Server_Docker](https://githu
 
 The script's logic runs every minute and follows these steps:
 
-1.  **Load Configuration (Hub or Local):** The script first checks if `API_SERVER_URI` and `API_TOKEN` are defined in `ups.env`.
-    *   **If yes (Hub Mode):** It attempts to fetch its configuration from the central API. If successful, it uses the fetched settings and caches them back to `ups.env`. This ensures that if the API is unreachable on a subsequent run, the script can use the last known good configuration.
-    *   **If no (Standalone Mode):** It uses the configuration defined directly in the `ups.env` file.
-2.  **Check UPS Status:** The script calls `upsc` to get the `ups.status` variable from the configured NUT server.
+1.  **Load Configuration:** The script requires `API_SERVER_URI` and `API_TOKEN` to be defined in `ups.env`. It attempts to fetch its configuration from the central API. If successful, it uses the fetched settings and caches them back to `ups.env`. If the API is unreachable, the script falls back to the local configuration in the `ups.env` file.
+2.  **Check UPS Status:** The script queries the `/upsc` API endpoint to get the UPS status from the configured UPS server.
 3.  **Detect Low Battery:** If the status is `OB LB` (On Battery, Low Battery), the script checks for the existence of a flag file (`/tmp/ups_shutdown_pending.flag`).
     * If the flag **doesn't exist**, it's the first sign of trouble. The script writes the current timestamp into the flag file and logs that the countdown has begun.
     * If the flag **exists**, the script calculates the time elapsed since the timestamp in the file. If the elapsed time exceeds the configured delay, it executes `shutdown -h now`.
@@ -68,7 +66,7 @@ Ensure the following packages are installed on your system:
 *   `cron` or another task scheduler
 *   `curl` (for hub mode and the update script)
 *   `jq` (required for hub mode to parse API responses)
-*   `nut-client` (or equivalent package that provides the `upsc` command)
+*   A configured UPS Server with REST API (such as `UPS_Server_Docker`)
 *   `git` for cloning the project from GitHub
 
 ### Step 1: Clone or Download the Repository
@@ -107,21 +105,21 @@ Now, edit the newly created `ups.env` with your specific settings:
 ```bash
 # ups.env
 
-# --- Standalone Mode Configuration ---
-# Used if the API Hub is not configured or unreachable.
+# --- Required API Configuration ---
+# This feature is designed to work with the UPS_Server_Docker project.
 
-# The identifier for the UPS on your NUT server (<upsname>@<hostname>).
-UPS_NAME="ups@192.168.1.50"
+# The address of your central UPS Hub API server.
+API_SERVER_URI="http://<UPS_SERVER_IP>:5000"
+
+# The secret token to authenticate with the API Hub.
+# The API_TOKEN value MUST exactly match the API_TOKEN set in the server's power_manager.conf file.
+API_TOKEN="your_secret_api_token_here"
+
+# --- Fallback Configuration ---
+# Used if the API Hub is unreachable or does not provide configuration.
 
 # The delay in minutes before shutdown after a low battery is detected.
 SHUTDOWN_DELAY_MINUTES=5
-
-# --- Optional: Hub Mode Configuration ---
-# To enable, provide the URI and a Bearer token for your central config server.
-# This feature is designed to work with the UPS_Server_Docker project. The API_TOKEN
-# value MUST exactly match the API_TOKEN set in the server's power_manager.conf file.
-# API_SERVER_URI="http://192.168.1.100:8000/api/ups"
-# API_TOKEN="your_secret_api_token_here"
 ```
 
 ### Step 3: Set Permissions
@@ -200,6 +198,51 @@ After setup, you can test the script's functionality:
 ## 🤝 Contributing
 
 This is a community-driven project. If you have an idea for an improvement or find a bug, please feel free to fork the repository, make your changes, and submit a pull request. You can also open an issue to start a discussion.
+
+---
+
+## 🔄 Migration Guide for Existing Users (v4.3.0)
+
+**IMPORTANT**: Starting with version 4.3.0, this project has undergone significant changes to improve reliability and simplify deployment.
+
+### What Changed?
+- **API-Only Operation**: The Linux script now exclusively uses REST API calls instead of the `upsc` command
+- **Mandatory API Configuration**: `API_SERVER_URI` and `API_TOKEN` are now required in `ups.env`
+- **No More NUT Client Dependency**: The `nut-client` package is no longer required on client machines
+
+### Migration Steps:
+
+1. **Update Your Configuration File**:
+   ```bash
+   # Add these required fields to your ups.env file:
+   API_SERVER_URI="http://your-ups-server:port/api/ups"
+   API_TOKEN="your_api_token_here"
+   ```
+
+2. **Remove NUT Client (Optional)**:
+   ```bash
+   # On Debian/Ubuntu systems:
+   sudo apt remove nut-client
+
+   # On other systems, consult your package manager documentation
+   ```
+
+3. **Test the New Version**:
+   Run the script manually to ensure it connects to your UPS server API:
+   ```bash
+   ./ups_monitor.sh
+   ```
+
+4. **Verify Logs**:
+   Check your system logs to confirm the script is working correctly with API calls.
+
+### Benefits of This Change:
+- ✅ **Simplified Installation**: No need to install and configure NUT client tools
+- ✅ **Better Error Handling**: More detailed error messages for API connectivity issues
+- ✅ **Unified Approach**: Linux and Windows versions now use identical logic
+- ✅ **Reduced Dependencies**: Only requires `curl` and `jq` (already needed for Hub Mode)
+
+---
 
 ## 📄 License
 

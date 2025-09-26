@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 ################################################################################
 #
-# Universal UPS Status Monitor (v4.2.0 - Status Reporting Edition)
+# Universal UPS Status Monitor (v4.3.0 - API-Only Edition)
 #
 # Features:
 # - Configurable shutdown delay.
@@ -20,6 +20,12 @@
 # - NEW: Reports client status back to the server
 # New in version 4.2.0:
 # - Report `online` status not only when the power is restored, but always
+# New in version 4.3.0:
+# - BREAKING CHANGE: Completely replaced upsc command with API calls
+# - No longer requires nut-client installation on client machines
+# - Uses /upsc API endpoint for UPS status checking
+# - API server configuration (API_SERVER_URI, API_TOKEN) is now mandatory
+# - Unified approach with Windows PowerShell version
 #
 ################################################################################
 
@@ -35,7 +41,6 @@ else
 fi
 
 # --- Set default values ---
-UPS_NAME="${UPS_NAME:-ups@localhost}"
 SHUTDOWN_DELAY_MINUTES="${SHUTDOWN_DELAY_MINUTES:-15}"
 FLAG_FILE="${FLAG_FILE:-/tmp/ups_shutdown_pending.flag}"
 LOG_TAG="${LOG_TAG:-UPS_Shutdown_Script}"
@@ -92,24 +97,21 @@ if [[ -n "$API_SERVER_URI" && -n "$API_TOKEN" ]]; then
     if [ $? -eq 0 ]; then
         # --- CHANGES ARE HERE ---
         # Read uppercase keys from the JSON response
-        REMOTE_UPS_NAME=$(echo "$API_RESPONSE" | jq -e -r '.UPS_NAME')
         REMOTE_SHUTDOWN_DELAY=$(echo "$API_RESPONSE" | jq -e -r '.SHUTDOWN_DELAY_MINUTES')
 
-        if [[ -n "$REMOTE_UPS_NAME" && -n "$REMOTE_SHUTDOWN_DELAY" ]]; then
-            send_log "info" "Successfully fetched remote config. Using UPS: '$REMOTE_UPS_NAME', Delay: '$REMOTE_SHUTDOWN_DELAY' minutes."
-            
+        if [[ -n "$REMOTE_SHUTDOWN_DELAY" ]]; then
+            send_log "info" "Successfully fetched remote config. Using delay: '$REMOTE_SHUTDOWN_DELAY' minutes."
+
             # Update local variables for the current run
-            UPS_NAME="$REMOTE_UPS_NAME"
             SHUTDOWN_DELAY_MINUTES="$REMOTE_SHUTDOWN_DELAY"
 
             # Update the local ups.env file to cache the new values
             send_log "info" "Updating local fallback configuration at $CONFIG_FILE."
             # Use sed to replace the values in-place. The delimiter | is used to avoid issues with slashes in paths.
-            sed -i "s|^UPS_NAME=.*|UPS_NAME=\"$UPS_NAME\"|" "$CONFIG_FILE"
             sed -i "s|^SHUTDOWN_DELAY_MINUTES=.*|SHUTDOWN_DELAY_MINUTES=$SHUTDOWN_DELAY_MINUTES|" "$CONFIG_FILE"
 
         else
-            send_log "warn" "API response was invalid (check key names: UPS_NAME, SHUTDOWN_DELAY_MINUTES). Falling back to local configuration."
+            send_log "warn" "API response was invalid (check key name: SHUTDOWN_DELAY_MINUTES). Falling back to local configuration."
         fi
     else
         send_log "warn" "Failed to connect to API Hub at $API_SERVER_URI. Falling back to local configuration."
@@ -120,10 +122,26 @@ fi
 
 # --- MAIN SCRIPT LOGIC ---
 SHUTDOWN_DELAY_SECONDS=$((SHUTDOWN_DELAY_MINUTES * 60))
-CURRENT_STATUS=$(upsc "$UPS_NAME" ups.status 2>/dev/null)
 
-if [ -z "$CURRENT_STATUS" ]; then
-    send_log "err" "ERROR: Could not get status from UPS server ($UPS_NAME). Check connection."
+# Get UPS status via API endpoint
+if [[ -z "$API_SERVER_URI" || -z "$API_TOKEN" ]]; then
+    send_log "err" "ERROR: API server configuration is required. Please set API_SERVER_URI and API_TOKEN in ups.env"
+    exit 1
+fi
+
+UPS_STATUS_URL="${API_SERVER_URI}/upsc"
+UPS_RESPONSE=$(curl --fail --silent --connect-timeout 5 --max-time 10 -H "Authorization: Bearer ${API_TOKEN}" "$UPS_STATUS_URL")
+
+if [ $? -ne 0 ]; then
+    send_log "err" "ERROR: Could not get status from UPS server API ($UPS_STATUS_URL). Check connection and API configuration."
+    exit 1
+fi
+
+# Extract status from JSON response using jq
+CURRENT_STATUS=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.status')
+
+if [ $? -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
+    send_log "err" "ERROR: Could not parse UPS status from API response. Expected 'ups.status' field in JSON."
     exit 1
 fi
 
