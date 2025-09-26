@@ -1,4 +1,4 @@
-# Universal NUT UPS Shutdown Script (UPS_Monitor)
+# UPS Shutdown Script (UPS_Monitor)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -66,7 +66,7 @@ Ensure the following packages are installed on your system:
 *   `cron` or another task scheduler
 *   `curl` (for hub mode and the update script)
 *   `jq` (required for hub mode to parse API responses)
-*   A configured UPS Server with REST API (such as `UPS_Server_Docker`)
+*   a configured UPS Server with REST API (see: [UPS_Server_Docker](https://github.com/MarekWo/UPS_Server_Docker))
 *   `git` for cloning the project from GitHub
 
 ### Step 1: Clone or Download the Repository
@@ -215,7 +215,7 @@ This is a community-driven project. If you have an idea for an improvement or fi
 1. **Update Your Configuration File**:
    ```bash
    # Add these required fields to your ups.env file:
-   API_SERVER_URI="http://your-ups-server:port/api/ups"
+   API_SERVER_URI="http://your-ups-server:5000"
    API_TOKEN="your_api_token_here"
    ```
 
