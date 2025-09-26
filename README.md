@@ -212,14 +212,21 @@ This is a community-driven project. If you have an idea for an improvement or fi
 
 ### Migration Steps:
 
-1. **Update Your Configuration File**:
+1. **Run the update.sh script**:
+   ```bash
+   # Navigate to your script directory and run the updater
+   cd /path/to/your/script/directory # for example /opt/ups-monitor
+   ./update.sh
+    ```
+
+2. **Update Your Configuration File**:
    ```bash
    # Add these required fields to your ups.env file:
    API_SERVER_URI="http://your-ups-server:5000"
    API_TOKEN="your_api_token_here"
    ```
 
-2. **Remove NUT Client (Optional)**:
+3. **Remove NUT Client (Optional)**:
    ```bash
    # On Debian/Ubuntu systems:
    sudo apt remove nut-client
@@ -227,13 +234,13 @@ This is a community-driven project. If you have an idea for an improvement or fi
    # On other systems, consult your package manager documentation
    ```
 
-3. **Test the New Version**:
+4. **Test the New Version**:
    Run the script manually to ensure it connects to your UPS server API:
    ```bash
    ./ups_monitor.sh
    ```
 
-4. **Verify Logs**:
+5. **Verify Logs**:
    Check your system logs to confirm the script is working correctly with API calls.
 
 ### Benefits of This Change:
@@ -247,5 +254,3 @@ This is a community-driven project. If you have an idea for an improvement or fi
 ## 📄 License
 
 This project is licensed under the MIT License. See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
-
-```
