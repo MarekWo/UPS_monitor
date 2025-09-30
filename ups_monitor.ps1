@@ -36,6 +36,7 @@ $ConfigFile = Join-Path $ScriptDir "ups.env"
 # Initialize variables with defaults
 $UPS_NAME = "ups@localhost"
 $SHUTDOWN_DELAY_MINUTES = 15
+$IGNORE_SIMULATION = "false"
 $FLAG_FILE = "$env:TEMP\ups_shutdown_pending.flag"
 $LOG_TAG = "UPS_Shutdown_Script"
 $API_SERVER_URI = $null
@@ -115,23 +116,33 @@ function Get-PrimaryIp {
 function Update-LocalConfig {
     param(
         [string]$UpsName,
-        [int]$ShutdownDelay
+        [int]$ShutdownDelay,
+        [string]$IgnoreSimulation
     )
-    
+
     try {
         Write-Log -Level "Information" -Message "Updating local fallback configuration at $ConfigFile."
-        
+
         $configContent = Get-Content $ConfigFile
+        $ignoreSimulationFound = ($configContent | Where-Object { $_ -match '^IGNORE_SIMULATION=' }).Count -gt 0
+
         $updatedContent = $configContent | ForEach-Object {
             if ($_ -match '^UPS_NAME=') {
                 "UPS_NAME=`"$UpsName`""
             } elseif ($_ -match '^SHUTDOWN_DELAY_MINUTES=') {
                 "SHUTDOWN_DELAY_MINUTES=$ShutdownDelay"
+            } elseif ($_ -match '^IGNORE_SIMULATION=') {
+                "IGNORE_SIMULATION=`"$IgnoreSimulation`""
             } else {
                 $_
             }
         }
-        
+
+        # Add IGNORE_SIMULATION if it wasn't found
+        if (-not $ignoreSimulationFound -and $PSBoundParameters.ContainsKey('IgnoreSimulation')) {
+            $updatedContent += "IGNORE_SIMULATION=`"$IgnoreSimulation`""
+        }
+
         $updatedContent | Set-Content $ConfigFile
     }
     catch {
@@ -194,27 +205,32 @@ if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::Is
 
         try {
             $ApiResponse = Invoke-RestMethod -Uri $ApiUrl -Headers $headers -TimeoutSec 10 -ErrorAction Stop
-            
+
             # Check for required properties in response
             $RemoteUpsName = $null
             $RemoteShutdownDelay = $null
-            
+            $RemoteIgnoreSimulation = "false"
+
             if ($ApiResponse.PSObject.Properties['UPS_NAME']) {
                 $RemoteUpsName = $ApiResponse.UPS_NAME
             }
             if ($ApiResponse.PSObject.Properties['SHUTDOWN_DELAY_MINUTES']) {
                 $RemoteShutdownDelay = $ApiResponse.SHUTDOWN_DELAY_MINUTES
             }
+            if ($ApiResponse.PSObject.Properties['IGNORE_SIMULATION']) {
+                $RemoteIgnoreSimulation = $ApiResponse.IGNORE_SIMULATION
+            }
 
             if (-not ([string]::IsNullOrWhiteSpace($RemoteUpsName)) -and $RemoteShutdownDelay -ne $null) {
-                Write-Log -Level "Information" -Message "Successfully fetched remote config. Using UPS: '$RemoteUpsName', Delay: '$RemoteShutdownDelay' minutes."
-                
+                Write-Log -Level "Information" -Message "Successfully fetched remote config. Using UPS: '$RemoteUpsName', Delay: '$RemoteShutdownDelay' minutes, IGNORE_SIMULATION: '$RemoteIgnoreSimulation'."
+
                 # Update local variables for the current run
                 $UPS_NAME = $RemoteUpsName
                 $SHUTDOWN_DELAY_MINUTES = [int]$RemoteShutdownDelay
+                $IGNORE_SIMULATION = $RemoteIgnoreSimulation
 
                 # Update the local ups.env file to cache the new values
-                Update-LocalConfig -UpsName $UPS_NAME -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                Update-LocalConfig -UpsName $UPS_NAME -ShutdownDelay $SHUTDOWN_DELAY_MINUTES -IgnoreSimulation $IGNORE_SIMULATION
             }
             else {
                 Write-Log -Level "Warning" -Message "API response was invalid (missing UPS_NAME or SHUTDOWN_DELAY_MINUTES). Falling back to local configuration."
@@ -235,6 +251,7 @@ else {
 # --- MAIN SCRIPT LOGIC ---
 $ShutdownDelaySeconds = [int]$SHUTDOWN_DELAY_MINUTES * 60
 $CurrentStatus = $null
+$UpsSimulation = $false
 
 # Get UPS status - try API first, then fall back to direct UPS query if available
 if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
@@ -242,10 +259,13 @@ if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::Is
         $UpsStatusUrl = "$API_SERVER_URI/upsc"
         $headers = @{ "Authorization" = "Bearer $API_TOKEN" }
         $UpsResponse = Invoke-RestMethod -Uri $UpsStatusUrl -Headers $headers -TimeoutSec 10 -ErrorAction Stop
-        
-        # Extract status from API response - adjust path as needed based on your API structure
+
+        # Extract status and simulation flag from API response
         if ($UpsResponse.PSObject.Properties['ups'] -and $UpsResponse.ups.PSObject.Properties['status']) {
             $CurrentStatus = $UpsResponse.ups.status
+            if ($UpsResponse.ups.PSObject.Properties['simulation']) {
+                $UpsSimulation = $UpsResponse.ups.simulation
+            }
         } elseif ($UpsResponse.PSObject.Properties['status']) {
             $CurrentStatus = $UpsResponse.status
         }
@@ -261,46 +281,60 @@ if (-not $CurrentStatus) {
     Exit 1
 }
 
-Write-Log -Level "Information" -Message "Current UPS status: $CurrentStatus"
+Write-Log -Level "Information" -Message "Current UPS status: $CurrentStatus, Simulation mode: $UpsSimulation"
 
 # Handle low battery condition
 if ($CurrentStatus -eq "OB LB") {
-    if (-not (Test-Path $FLAG_FILE)) {
-        Write-Log -Level "Warning" -Message "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
-        $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        $startTime | Set-Content $FLAG_FILE
-        # Send status update about the countdown
-        Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+    # Check if we should ignore this status due to simulation mode
+    if ($UpsSimulation -eq $true -and $IGNORE_SIMULATION -eq "true") {
+        Write-Log -Level "Information" -Message "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
+        # Cancel any pending shutdown
+        if (Test-Path $FLAG_FILE) {
+            Write-Log -Level "Information" -Message "Cancelling pending shutdown due to simulation mode."
+            Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+        }
+        # Report online status since we're ignoring the simulated power failure
+        Send-StatusUpdate -Status "online"
     }
     else {
-        try {
-            $startTime = [int64](Get-Content $FLAG_FILE -ErrorAction Stop)
-            $currentTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-            $elapsedTime = $currentTime - $startTime
-            $remainingSeconds = $ShutdownDelaySeconds - $elapsedTime
-            
-            if ($elapsedTime -ge $ShutdownDelaySeconds) {
-                Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."                
-                # Send-StatusUpdate -Status "shutting_down"
-                Send-StatusUpdate -Status "shutting_down"
-                Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
-                Stop-Computer -Force
-                Exit 0
-            }
-            else {
-                Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingSeconds / 60)) minutes remaining."
-                # Update status with remaining time
-                Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $remainingSeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
-            }
-        }
-        catch {
-            # Restored catch block in case flag file read fails
-            Write-Log -Level "Warning" -Message "Error reading flag file. Recreating with current timestamp."
+        # Normal shutdown procedure
+        if (-not (Test-Path $FLAG_FILE)) {
+            Write-Log -Level "Warning" -Message "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
             $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
             $startTime | Set-Content $FLAG_FILE
-            
-            # Send Status Update about the countdown (again)
+            # Send status update about the countdown
             Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+        }
+        else {
+            try {
+                $startTime = [int64](Get-Content $FLAG_FILE -ErrorAction Stop)
+                $currentTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                $elapsedTime = $currentTime - $startTime
+                $remainingSeconds = $ShutdownDelaySeconds - $elapsedTime
+
+                if ($elapsedTime -ge $ShutdownDelaySeconds) {
+                    Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
+                    # Send-StatusUpdate -Status "shutting_down"
+                    Send-StatusUpdate -Status "shutting_down"
+                    Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+                    Stop-Computer -Force
+                    Exit 0
+                }
+                else {
+                    Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingSeconds / 60)) minutes remaining."
+                    # Update status with remaining time
+                    Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $remainingSeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                }
+            }
+            catch {
+                # Restored catch block in case flag file read fails
+                Write-Log -Level "Warning" -Message "Error reading flag file. Recreating with current timestamp."
+                $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                $startTime | Set-Content $FLAG_FILE
+
+                # Send Status Update about the countdown (again)
+                Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+            }
         }
     }
 }

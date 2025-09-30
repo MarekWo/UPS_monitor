@@ -98,17 +98,26 @@ if [[ -n "$API_SERVER_URI" && -n "$API_TOKEN" ]]; then
         # --- CHANGES ARE HERE ---
         # Read uppercase keys from the JSON response
         REMOTE_SHUTDOWN_DELAY=$(echo "$API_RESPONSE" | jq -e -r '.SHUTDOWN_DELAY_MINUTES')
+        REMOTE_IGNORE_SIMULATION=$(echo "$API_RESPONSE" | jq -e -r '.IGNORE_SIMULATION // "false"')
 
         if [[ -n "$REMOTE_SHUTDOWN_DELAY" ]]; then
-            send_log "info" "Successfully fetched remote config. Using delay: '$REMOTE_SHUTDOWN_DELAY' minutes."
+            send_log "info" "Successfully fetched remote config. Using delay: '$REMOTE_SHUTDOWN_DELAY' minutes, IGNORE_SIMULATION: '$REMOTE_IGNORE_SIMULATION'."
 
             # Update local variables for the current run
             SHUTDOWN_DELAY_MINUTES="$REMOTE_SHUTDOWN_DELAY"
+            IGNORE_SIMULATION="$REMOTE_IGNORE_SIMULATION"
 
             # Update the local ups.env file to cache the new values
             send_log "info" "Updating local fallback configuration at $CONFIG_FILE."
             # Use sed to replace the values in-place. The delimiter | is used to avoid issues with slashes in paths.
             sed -i "s|^SHUTDOWN_DELAY_MINUTES=.*|SHUTDOWN_DELAY_MINUTES=$SHUTDOWN_DELAY_MINUTES|" "$CONFIG_FILE"
+
+            # Update or add IGNORE_SIMULATION in the config file
+            if grep -q "^IGNORE_SIMULATION=" "$CONFIG_FILE"; then
+                sed -i "s|^IGNORE_SIMULATION=.*|IGNORE_SIMULATION=\"$IGNORE_SIMULATION\"|" "$CONFIG_FILE"
+            else
+                echo "IGNORE_SIMULATION=\"$IGNORE_SIMULATION\"" >> "$CONFIG_FILE"
+            fi
 
         else
             send_log "warn" "API response was invalid (check key name: SHUTDOWN_DELAY_MINUTES). Falling back to local configuration."
@@ -137,8 +146,9 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Extract status from JSON response using jq
+# Extract status and simulation flag from JSON response using jq
 CURRENT_STATUS=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.status')
+UPS_SIMULATION=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.simulation // false')
 
 if [ $? -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
     send_log "err" "ERROR: Could not parse UPS status from API response. Expected 'ups.status' field in JSON."
@@ -146,25 +156,38 @@ if [ $? -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; t
 fi
 
 if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
-    if [ ! -f "$FLAG_FILE" ]; then
-        send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown..."
-        date +%s > "$FLAG_FILE"
-        send_status_update "shutdown_pending" "$SHUTDOWN_DELAY_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
-    else
-        START_TIME=$(cat "$FLAG_FILE")
-        CURRENT_TIME=$(date +%s)
-        ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
-        REMAINING_SECONDS=$((SHUTDOWN_DELAY_SECONDS - ELAPSED_TIME))
-
-        if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
-            send_log "err" "Shutdown delay passed. Shutting down NOW."
-            send_status_update "shutting_down"
+    # Check if we should ignore this status due to simulation mode
+    if [[ "$UPS_SIMULATION" == "true" && "$IGNORE_SIMULATION" == "true" ]]; then
+        send_log "info" "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
+        # Cancel any pending shutdown
+        if [ -f "$FLAG_FILE" ]; then
+            send_log "info" "Cancelling pending shutdown due to simulation mode."
             rm -f "$FLAG_FILE"
-            /sbin/shutdown -h now
-            exit 0
+        fi
+        # Report online status since we're ignoring the simulated power failure
+        send_status_update "online"
+    else
+        # Normal shutdown procedure
+        if [ ! -f "$FLAG_FILE" ]; then
+            send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown..."
+            date +%s > "$FLAG_FILE"
+            send_status_update "shutdown_pending" "$SHUTDOWN_DELAY_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
         else
-            # Wysyłaj aktualizację co minutę
-            send_status_update "shutdown_pending" "$REMAINING_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
+            START_TIME=$(cat "$FLAG_FILE")
+            CURRENT_TIME=$(date +%s)
+            ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+            REMAINING_SECONDS=$((SHUTDOWN_DELAY_SECONDS - ELAPSED_TIME))
+
+            if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
+                send_log "err" "Shutdown delay passed. Shutting down NOW."
+                send_status_update "shutting_down"
+                rm -f "$FLAG_FILE"
+                /sbin/shutdown -h now
+                exit 0
+            else
+                # Wysyłaj aktualizację co minutę
+                send_status_update "shutdown_pending" "$REMAINING_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
+            fi
         fi
     fi
 elif [[ "$CURRENT_STATUS" == "OL" ]]; then
