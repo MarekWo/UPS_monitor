@@ -148,9 +148,10 @@ fi
 
 # Extract status and simulation flag from JSON response using jq
 CURRENT_STATUS=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.status')
-UPS_SIMULATION=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.simulation // false')
+STATUS_EXIT_CODE=$?
+UPS_SIMULATION=$(echo "$UPS_RESPONSE" | jq -r '.ups.simulation // false')
 
-if [ $? -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
+if [ $STATUS_EXIT_CODE -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
     send_log "err" "ERROR: Could not parse UPS status from API response. Expected 'ups.status' field in JSON."
     exit 1
 fi
