@@ -1,14 +1,16 @@
 #!/usr/bin/bash
 ################################################################################
 #
-# Universal UPS Status Monitor (v4.3.0 - API-Only Edition)
+# Universal UPS Status Monitor (v4.4.0 - Sub-Minute Polling Edition)
 #
 # Features:
-# - Configurable shutdown delay.
+# - Configurable shutdown delay (including immediate shutdown with delay=0).
+# - Sub-minute UPS monitoring: 4 checks per minute at 15-second intervals.
 # - Shutdown cancellation if power is restored.
 # - Stateful operation using a flag file.
 # - External configuration via an .env file.
 # - Universal logging for Synology DSM and standard Linux.
+# - Lock file to prevent concurrent execution.
 # New in version 4.0.0:
 # - Introduces hub functionality
 # - Fetches configuration from a central "UPS Hub" REST API.
@@ -26,6 +28,10 @@
 # - Uses /upsc API endpoint for UPS status checking
 # - API server configuration (API_SERVER_URI, API_TOKEN) is now mandatory
 # - Unified approach with Windows PowerShell version
+# New in version 4.4.0:
+# - Sub-minute polling: 4 UPS status checks per minute (every 15 seconds)
+# - Support for SHUTDOWN_DELAY_MINUTES=0 (immediate shutdown)
+# - Lock file to prevent concurrent script execution
 #
 ################################################################################
 
@@ -44,6 +50,19 @@ fi
 SHUTDOWN_DELAY_MINUTES="${SHUTDOWN_DELAY_MINUTES:-15}"
 FLAG_FILE="${FLAG_FILE:-/tmp/ups_shutdown_pending.flag}"
 LOG_TAG="${LOG_TAG:-UPS_Shutdown_Script}"
+
+# --- Sub-minute polling constants ---
+CHECK_ITERATIONS=4
+CHECK_INTERVAL=15
+
+# --- Lock file to prevent concurrent execution ---
+LOCK_FILE="/tmp/ups_monitor.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    logger -t "$LOG_TAG" "Another instance is already running. Exiting."
+    exit 0
+fi
+# Lock is automatically released when the script exits (fd 200 closes).
 
 # --- Universal logging function ---
 send_log() {
@@ -132,72 +151,94 @@ fi
 # --- MAIN SCRIPT LOGIC ---
 SHUTDOWN_DELAY_SECONDS=$((SHUTDOWN_DELAY_MINUTES * 60))
 
-# Get UPS status via API endpoint
+# Verify API configuration before entering the monitoring loop
 if [[ -z "$API_SERVER_URI" || -z "$API_TOKEN" ]]; then
     send_log "err" "ERROR: API server configuration is required. Please set API_SERVER_URI and API_TOKEN in ups.env"
     exit 1
 fi
 
 UPS_STATUS_URL="${API_SERVER_URI}/upsc"
-UPS_RESPONSE=$(curl --fail --silent --connect-timeout 5 --max-time 10 -H "Authorization: Bearer ${API_TOKEN}" "$UPS_STATUS_URL")
 
-if [ $? -ne 0 ]; then
-    send_log "err" "ERROR: Could not get status from UPS server API ($UPS_STATUS_URL). Check connection and API configuration."
-    exit 1
-fi
+send_log "info" "Starting UPS monitoring cycle ($CHECK_ITERATIONS checks, ${CHECK_INTERVAL}s interval)."
 
-# Extract status and simulation flag from JSON response using jq
-CURRENT_STATUS=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.status')
-STATUS_EXIT_CODE=$?
-UPS_SIMULATION=$(echo "$UPS_RESPONSE" | jq -r '.ups.simulation // false')
+for ((i=1; i<=CHECK_ITERATIONS; i++)); do
 
-if [ $STATUS_EXIT_CODE -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
-    send_log "err" "ERROR: Could not parse UPS status from API response. Expected 'ups.status' field in JSON."
-    exit 1
-fi
+    UPS_RESPONSE=$(curl --fail --silent --connect-timeout 5 --max-time 10 -H "Authorization: Bearer ${API_TOKEN}" "$UPS_STATUS_URL")
 
-if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
-    # Check if we should ignore this status due to simulation mode
-    if [[ "$UPS_SIMULATION" == "true" && "$IGNORE_SIMULATION" == "true" ]]; then
-        send_log "info" "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
-        # Cancel any pending shutdown
-        if [ -f "$FLAG_FILE" ]; then
-            send_log "info" "Cancelling pending shutdown due to simulation mode."
-            rm -f "$FLAG_FILE"
-        fi
-        # Report online status since we're ignoring the simulated power failure
-        send_status_update "online"
-    else
-        # Normal shutdown procedure
-        if [ ! -f "$FLAG_FILE" ]; then
-            send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown..."
-            date +%s > "$FLAG_FILE"
-            send_status_update "shutdown_pending" "$SHUTDOWN_DELAY_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
+    if [ $? -ne 0 ]; then
+        send_log "err" "ERROR: Could not get status from UPS server API ($UPS_STATUS_URL). Will retry in ${CHECK_INTERVAL}s."
+        if [ $i -lt $CHECK_ITERATIONS ]; then sleep $CHECK_INTERVAL; fi
+        continue
+    fi
+
+    # Extract status and simulation flag from JSON response using jq
+    CURRENT_STATUS=$(echo "$UPS_RESPONSE" | jq -e -r '.ups.status')
+    STATUS_EXIT_CODE=$?
+    UPS_SIMULATION=$(echo "$UPS_RESPONSE" | jq -r '.ups.simulation // false')
+
+    if [ $STATUS_EXIT_CODE -ne 0 ] || [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" = "null" ]; then
+        send_log "err" "ERROR: Could not parse UPS status from API response. Will retry in ${CHECK_INTERVAL}s."
+        if [ $i -lt $CHECK_ITERATIONS ]; then sleep $CHECK_INTERVAL; fi
+        continue
+    fi
+
+    if [[ "$CURRENT_STATUS" == "OB LB" ]]; then
+        # Check if we should ignore this status due to simulation mode
+        if [[ "$UPS_SIMULATION" == "true" && "$IGNORE_SIMULATION" == "true" ]]; then
+            send_log "info" "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
+            # Cancel any pending shutdown
+            if [ -f "$FLAG_FILE" ]; then
+                send_log "info" "Cancelling pending shutdown due to simulation mode."
+                rm -f "$FLAG_FILE"
+            fi
+            # Report online status since we're ignoring the simulated power failure
+            send_status_update "online"
         else
-            START_TIME=$(cat "$FLAG_FILE")
-            CURRENT_TIME=$(date +%s)
-            ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
-            REMAINING_SECONDS=$((SHUTDOWN_DELAY_SECONDS - ELAPSED_TIME))
-
-            if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
-                send_log "err" "Shutdown delay passed. Shutting down NOW."
+            # Immediate shutdown if delay is 0
+            if [ "$SHUTDOWN_DELAY_SECONDS" -eq 0 ]; then
+                send_log "err" "Low battery detected! Delay is 0 minutes. Shutting down NOW."
                 send_status_update "shutting_down"
                 rm -f "$FLAG_FILE"
                 /sbin/shutdown -h now
                 exit 0
+            fi
+
+            # Normal shutdown procedure with countdown
+            if [ ! -f "$FLAG_FILE" ]; then
+                send_log "warn" "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown..."
+                date +%s > "$FLAG_FILE"
+                send_status_update "shutdown_pending" "$SHUTDOWN_DELAY_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
             else
-                # Wysyłaj aktualizację co minutę
-                send_status_update "shutdown_pending" "$REMAINING_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
+                START_TIME=$(cat "$FLAG_FILE")
+                CURRENT_TIME=$(date +%s)
+                ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+                REMAINING_SECONDS=$((SHUTDOWN_DELAY_SECONDS - ELAPSED_TIME))
+
+                if [ "$ELAPSED_TIME" -ge "$SHUTDOWN_DELAY_SECONDS" ]; then
+                    send_log "err" "Shutdown delay passed. Shutting down NOW."
+                    send_status_update "shutting_down"
+                    rm -f "$FLAG_FILE"
+                    /sbin/shutdown -h now
+                    exit 0
+                else
+                    send_status_update "shutdown_pending" "$REMAINING_SECONDS" "$SHUTDOWN_DELAY_MINUTES"
+                fi
             fi
         fi
+    elif [[ "$CURRENT_STATUS" == "OL" ]]; then
+        if [ -f "$FLAG_FILE" ]; then
+            send_log "info" "Mains power restored. Cancelling shutdown."
+            rm -f "$FLAG_FILE"
+        fi
+        # Always report that the client is online and healthy on every successful run
+        send_status_update "online"
     fi
-elif [[ "$CURRENT_STATUS" == "OL" ]]; then
-    if [ -f "$FLAG_FILE" ]; then
-        send_log "info" "Mains power restored. Cancelling shutdown."
-        rm -f "$FLAG_FILE"
+
+    # Sleep between iterations, but not after the last one
+    if [ $i -lt $CHECK_ITERATIONS ]; then
+        sleep $CHECK_INTERVAL
     fi
-    # Always report that the client is online and healthy on every successful run
-    send_status_update "online"
-fi
+
+done
 
 exit 0

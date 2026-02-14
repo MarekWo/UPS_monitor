@@ -1,8 +1,9 @@
 ## 🚀 Features
 
 * **Reliable Shutdown:** Uses the low-level `shutdown` command, avoiding complex and fragile "standby" modes.
+* **Sub-Minute Monitoring:** Performs 4 UPS status checks per minute at 15-second intervals, providing rapid response even for UPS units with very short battery life.
 * **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`UPS_NAME`, `SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
-* **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve.
+* **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve. Set to `0` for immediate shutdown on low battery detection.
 * **Smart Cancellation:** Automatically cancels the pending shutdown if mains power is restored.
 * **Resilient Fallback:** If the central API hub is unreachable, the script automatically falls back to using its last known good configuration from the local `ups.env` file, ensuring uninterrupted protection.
 * **Compatibility:** Works on any Windows machines with Powershell 5.1 or later.
@@ -28,7 +29,7 @@ Ensure the following are available on your system:
 * **Internet access** for the script to communicate with the UPS API server.
 * The script must be run as an **Administrator** to schedule tasks, write to the Event Log, and initiate system shutdown.
 
-**Important:** The PowerShell script communicates with the UPS server via REST API (unlike the Linux version which uses the `upsc` command directly). Ensure your UPS server provides the appropriate API endpoints.
+**Important:** Both the PowerShell and Linux scripts communicate with the UPS server via REST API. Ensure your UPS server provides the appropriate API endpoints.
 
 ### Step 1: Clone or Download the Repository
 
@@ -76,6 +77,7 @@ API_TOKEN="your_super_secret_api_token"
 # --- Fallback Configuration ---
 # Used if the API Hub is unreachable.
 UPS_NAME="ups@192.168.1.50"
+# Set to 0 for immediate shutdown (no countdown).
 SHUTDOWN_DELAY_MINUTES=10
 
 # --- Optional Windows-specific settings ---
@@ -83,7 +85,7 @@ SHUTDOWN_DELAY_MINUTES=10
 # LOG_TAG="UPS_Monitor_Windows"
 ```
 
-**Note:** The Windows version requires the API server configuration (`API_SERVER_URI` and `API_TOKEN`) to function properly, as it cannot use the native `upsc` command like the Linux version.
+**Note:** Both versions require the API server configuration (`API_SERVER_URI` and `API_TOKEN`) to function properly.
 
 ### Step 3: Set PowerShell Execution Policy and Unblock Scripts
 
@@ -239,7 +241,7 @@ Get-ScheduledTask -TaskName "UPS Monitor" | Get-ScheduledTaskInfo
 ### 4. Simulate Power Events
 **Testing Low Battery Detection:**
 1. Configure your UPS server to return `OB LB` status.
-2. Wait for the next script execution (up to 1 minute).
+2. Wait for the next script execution (the script checks every 15 seconds within each 1-minute cycle).
 3. Check Event Viewer for countdown initiation messages.
 4. The script should log: `"Low battery detected! Starting X minute countdown to system shutdown."`
 

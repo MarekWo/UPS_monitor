@@ -28,8 +28,9 @@ This method provides predictable, robust, and platform-agnostic protection again
 ## 🚀 Features
 
 * **Reliable Shutdown:** Uses the low-level `shutdown` command, avoiding complex and fragile "standby" modes.
+* **Sub-Minute Monitoring:** Performs 4 UPS status checks per minute at 15-second intervals, providing rapid response even for UPS units with very short battery life.
 * **Centralized Configuration (Hub Mode):** Optionally, the script can fetch its configuration (`SHUTDOWN_DELAY_MINUTES`) from a central REST API endpoint. This is perfect for managing multiple client machines from a single location.
-* **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve.
+* **Configurable Delay:** Set a grace period (in minutes) before shutdown, giving short power outages a chance to resolve. Set to `0` for immediate shutdown on low battery detection.
 * **Smart Cancellation:** Automatically cancels the pending shutdown if mains power is restored.
 * **Resilient Fallback:** If the central API hub is unreachable, the script automatically falls back to using its last known good configuration from the local `ups.env` file, ensuring uninterrupted protection.
 * **Universal Compatibility:** Works on virtually any Linux-based system with Bash, curl and jq (Synology DSM, Proxmox, Debian, Ubuntu, etc.).
@@ -44,13 +45,15 @@ This project is the perfect companion to the **[UPS_Server_Docker](https://githu
 
 ## 🔧 How It Works
 
-The script's logic runs every minute and follows these steps:
+The script is triggered every minute by cron (or Task Scheduler on Windows), but internally performs **4 UPS status checks at 15-second intervals** within each invocation. This provides sub-minute monitoring resolution without requiring any changes to your scheduler configuration. A lock file prevents overlapping executions.
 
 1.  **Load Configuration:** The script requires `API_SERVER_URI` and `API_TOKEN` to be defined in `ups.env`. It attempts to fetch its configuration from the central API. If successful, it uses the fetched settings and caches them back to `ups.env`. If the API is unreachable, the script falls back to the local configuration in the `ups.env` file.
-2.  **Check UPS Status:** The script queries the `/upsc` API endpoint to get the UPS status from the configured UPS server.
-3.  **Detect Low Battery:** If the status is `OB LB` (On Battery, Low Battery), the script checks for the existence of a flag file (`/tmp/ups_shutdown_pending.flag`).
-    * If the flag **doesn't exist**, it's the first sign of trouble. The script writes the current timestamp into the flag file and logs that the countdown has begun.
-    * If the flag **exists**, the script calculates the time elapsed since the timestamp in the file. If the elapsed time exceeds the configured delay, it executes `shutdown -h now`.
+2.  **Check UPS Status (every 15 seconds):** The script queries the `/upsc` API endpoint to get the UPS status from the configured UPS server. It performs this check 4 times per invocation (at t=0s, 15s, 30s, 45s).
+3.  **Detect Low Battery:** If the status is `OB LB` (On Battery, Low Battery):
+    * If `SHUTDOWN_DELAY_MINUTES` is set to `0`, the script initiates an **immediate shutdown** without any countdown.
+    * Otherwise, the script checks for the existence of a flag file (`/tmp/ups_shutdown_pending.flag`).
+        * If the flag **doesn't exist**, it's the first sign of trouble. The script writes the current timestamp into the flag file and logs that the countdown has begun.
+        * If the flag **exists**, the script calculates the time elapsed since the timestamp in the file. If the elapsed time exceeds the configured delay, it executes `shutdown -h now`.
 4.  **Detect Power Restoration:** If the status is `OL` (On Line) and the flag file **exists**, the script knows a shutdown was pending. It logs the cancellation and simply deletes the flag file, effectively resetting the state.
 
 ---
@@ -119,6 +122,7 @@ API_TOKEN="your_secret_api_token_here"
 # Used if the API Hub is unreachable or does not provide configuration.
 
 # The delay in minutes before shutdown after a low battery is detected.
+# Set to 0 for immediate shutdown (no countdown).
 SHUTDOWN_DELAY_MINUTES=5
 ```
 

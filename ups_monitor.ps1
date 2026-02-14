@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Universal UPS Status Monitor for Windows (v4.2.0)
+    Universal UPS Status Monitor for Windows (v4.4.0 - Sub-Minute Polling Edition)
     Monitors a remote NUT UPS server via REST API and reports status back to server.
 .DESCRIPTION
     A robust, universal, and configurable PowerShell script that safely shuts down a Windows-based
@@ -8,16 +8,18 @@
     as a feature-equivalent replacement for the Linux UPS_Monitor script.
 
     Features:
-    - Configurable shutdown delay.
+    - Configurable shutdown delay (including immediate shutdown with delay=0).
+    - Sub-minute UPS monitoring: 4 checks per minute at 15-second intervals.
     - Shutdown cancellation if power is restored.
     - Stateful operation using a flag file.
     - External configuration via an ups.env file.
     - Hub functionality: Fetches configuration from a central REST API.
     - Resilient Fallback: Uses a local ups.env file if the API is unreachable.
     - Caching: Updates the local ups.env file with the last successful config from the hub.
+    - Lock file to prevent concurrent execution.
 .NOTES
     Author: MarekWo
-    Version: 4.2.0
+    Version: 4.4.0
     Requires: Windows PowerShell 5.1 or later.
     Execution Policy: Must be run with an execution policy that allows scripts (e.g., RemoteSigned).
     Permissions: Must be run as an Administrator to write to the Event Log and to initiate shutdown.
@@ -194,6 +196,25 @@ function Send-StatusUpdate {
     }
 }
 
+# --- Sub-minute polling constants ---
+$CHECK_ITERATIONS = 4
+$CHECK_INTERVAL = 15
+
+# --- Lock file to prevent concurrent execution ---
+$LockFile = Join-Path $env:TEMP "ups_monitor.lock"
+if (Test-Path $LockFile) {
+    try {
+        $lockPid = [int](Get-Content $LockFile -ErrorAction Stop)
+        if (Get-Process -Id $lockPid -ErrorAction SilentlyContinue) {
+            Write-Log -Level "Information" -Message "Another instance (PID $lockPid) is already running. Exiting."
+            Exit 0
+        }
+    } catch {
+        # Lock file exists but is invalid or stale - proceed
+    }
+}
+$PID | Set-Content $LockFile
+
 # --- Configuration Fetching Logic (Hub Mode) ---
 if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
     Write-Log -Level "Information" -Message "API server is configured. Attempting to fetch remote configuration."
@@ -250,111 +271,137 @@ else {
 
 # --- MAIN SCRIPT LOGIC ---
 $ShutdownDelaySeconds = [int]$SHUTDOWN_DELAY_MINUTES * 60
-$CurrentStatus = $null
-$UpsSimulation = $false
+$UpsStatusUrl = "$API_SERVER_URI/upsc"
 
-# Get UPS status - try API first, then fall back to direct UPS query if available
-if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
-    try {
-        $UpsStatusUrl = "$API_SERVER_URI/upsc"
-        $headers = @{ "Authorization" = "Bearer $API_TOKEN" }
-        $UpsResponse = Invoke-RestMethod -Uri $UpsStatusUrl -Headers $headers -TimeoutSec 10 -ErrorAction Stop
+Write-Log -Level "Information" -Message "Starting UPS monitoring cycle ($CHECK_ITERATIONS checks, ${CHECK_INTERVAL}s interval)."
 
-        # Extract status and simulation flag from API response
-        if ($UpsResponse.PSObject.Properties['ups'] -and $UpsResponse.ups.PSObject.Properties['status']) {
-            $CurrentStatus = $UpsResponse.ups.status
-            if ($UpsResponse.ups.PSObject.Properties['simulation']) {
-                $UpsSimulation = $UpsResponse.ups.simulation
-            }
-        } elseif ($UpsResponse.PSObject.Properties['status']) {
-            $CurrentStatus = $UpsResponse.status
-        }
-    }
-    catch {
-        Write-Log -Level "Error" -Message "ERROR: Could not get status from UPS server API ($UpsStatusUrl). Error: $($_.Exception.Message)"
-        Exit 1
-    }
-}
+try {
+    for ($i = 1; $i -le $CHECK_ITERATIONS; $i++) {
 
-if (-not $CurrentStatus) {
-    Write-Log -Level "Error" -Message "ERROR: Could not determine UPS status from any source."
-    Exit 1
-}
+        $CurrentStatus = $null
+        $UpsSimulation = $false
 
-Write-Log -Level "Information" -Message "Current UPS status: $CurrentStatus, Simulation mode: $UpsSimulation"
-
-# Handle low battery condition
-if ($CurrentStatus -eq "OB LB") {
-    # Check if we should ignore this status due to simulation mode
-    if ($UpsSimulation -eq $true -and $IGNORE_SIMULATION -eq "true") {
-        Write-Log -Level "Information" -Message "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
-        # Cancel any pending shutdown
-        if (Test-Path $FLAG_FILE) {
-            Write-Log -Level "Information" -Message "Cancelling pending shutdown due to simulation mode."
-            Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
-        }
-        # Report online status since we're ignoring the simulated power failure
-        Send-StatusUpdate -Status "online"
-    }
-    else {
-        # Normal shutdown procedure
-        if (-not (Test-Path $FLAG_FILE)) {
-            Write-Log -Level "Warning" -Message "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
-            $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-            $startTime | Set-Content $FLAG_FILE
-            # Send status update about the countdown
-            Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
-        }
-        else {
+        # Get UPS status via API
+        if (-not ([string]::IsNullOrWhiteSpace($API_SERVER_URI)) -and -not ([string]::IsNullOrWhiteSpace($API_TOKEN))) {
             try {
-                $startTime = [int64](Get-Content $FLAG_FILE -ErrorAction Stop)
-                $currentTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                $elapsedTime = $currentTime - $startTime
-                $remainingSeconds = $ShutdownDelaySeconds - $elapsedTime
+                $headers = @{ "Authorization" = "Bearer $API_TOKEN" }
+                $UpsResponse = Invoke-RestMethod -Uri $UpsStatusUrl -Headers $headers -TimeoutSec 10 -ErrorAction Stop
 
-                if ($elapsedTime -ge $ShutdownDelaySeconds) {
-                    Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
-                    # Send-StatusUpdate -Status "shutting_down"
+                # Extract status and simulation flag from API response
+                if ($UpsResponse.PSObject.Properties['ups'] -and $UpsResponse.ups.PSObject.Properties['status']) {
+                    $CurrentStatus = $UpsResponse.ups.status
+                    if ($UpsResponse.ups.PSObject.Properties['simulation']) {
+                        $UpsSimulation = $UpsResponse.ups.simulation
+                    }
+                } elseif ($UpsResponse.PSObject.Properties['status']) {
+                    $CurrentStatus = $UpsResponse.status
+                }
+            }
+            catch {
+                Write-Log -Level "Error" -Message "ERROR: Could not get status from UPS server API ($UpsStatusUrl). Will retry in ${CHECK_INTERVAL}s. Error: $($_.Exception.Message)"
+                if ($i -lt $CHECK_ITERATIONS) { Start-Sleep -Seconds $CHECK_INTERVAL }
+                continue
+            }
+        }
+
+        if (-not $CurrentStatus) {
+            Write-Log -Level "Error" -Message "ERROR: Could not determine UPS status. Will retry in ${CHECK_INTERVAL}s."
+            if ($i -lt $CHECK_ITERATIONS) { Start-Sleep -Seconds $CHECK_INTERVAL }
+            continue
+        }
+
+        Write-Log -Level "Information" -Message "Current UPS status: $CurrentStatus, Simulation mode: $UpsSimulation"
+
+        # Handle low battery condition
+        if ($CurrentStatus -eq "OB LB") {
+            # Check if we should ignore this status due to simulation mode
+            if ($UpsSimulation -eq $true -and $IGNORE_SIMULATION -eq "true") {
+                Write-Log -Level "Information" -Message "UPS is in simulation mode and IGNORE_SIMULATION is enabled. Ignoring OB LB status."
+                # Cancel any pending shutdown
+                if (Test-Path $FLAG_FILE) {
+                    Write-Log -Level "Information" -Message "Cancelling pending shutdown due to simulation mode."
+                    Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+                }
+                # Report online status since we're ignoring the simulated power failure
+                Send-StatusUpdate -Status "online"
+            }
+            else {
+                # Immediate shutdown if delay is 0
+                if ($ShutdownDelaySeconds -eq 0) {
+                    Write-Log -Level "Error" -Message "Low battery detected! Delay is 0 minutes. Shutting down NOW."
                     Send-StatusUpdate -Status "shutting_down"
                     Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
                     Stop-Computer -Force
                     Exit 0
                 }
+
+                # Normal shutdown procedure with countdown
+                if (-not (Test-Path $FLAG_FILE)) {
+                    Write-Log -Level "Warning" -Message "Low battery detected! Starting $SHUTDOWN_DELAY_MINUTES minute countdown to system shutdown."
+                    $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                    $startTime | Set-Content $FLAG_FILE
+                    # Send status update about the countdown
+                    Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                }
                 else {
-                    Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingSeconds / 60)) minutes remaining."
-                    # Update status with remaining time
-                    Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $remainingSeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                    try {
+                        $startTime = [int64](Get-Content $FLAG_FILE -ErrorAction Stop)
+                        $currentTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                        $elapsedTime = $currentTime - $startTime
+                        $remainingSeconds = $ShutdownDelaySeconds - $elapsedTime
+
+                        if ($elapsedTime -ge $ShutdownDelaySeconds) {
+                            Write-Log -Level "Error" -Message "Shutdown delay of $SHUTDOWN_DELAY_MINUTES minutes has passed. Shutting down NOW."
+                            Send-StatusUpdate -Status "shutting_down"
+                            Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+                            Stop-Computer -Force
+                            Exit 0
+                        }
+                        else {
+                            Write-Log -Level "Warning" -Message "Shutdown countdown in progress. $([math]::Ceiling($remainingSeconds / 60)) minutes remaining."
+                            # Update status with remaining time
+                            Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $remainingSeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                        }
+                    }
+                    catch {
+                        # Catch block in case flag file read fails
+                        Write-Log -Level "Warning" -Message "Error reading flag file. Recreating with current timestamp."
+                        $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                        $startTime | Set-Content $FLAG_FILE
+
+                        # Send Status Update about the countdown (again)
+                        Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+                    }
                 }
             }
-            catch {
-                # Restored catch block in case flag file read fails
-                Write-Log -Level "Warning" -Message "Error reading flag file. Recreating with current timestamp."
-                $startTime = [System.DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                $startTime | Set-Content $FLAG_FILE
-
-                # Send Status Update about the countdown (again)
-                Send-StatusUpdate -Status "shutdown_pending" -RemainingSeconds $ShutdownDelaySeconds -ShutdownDelay $SHUTDOWN_DELAY_MINUTES
+        }
+        # Handle power restoration and normal online status
+        elseif ($CurrentStatus -eq "OL") {
+            if (Test-Path $FLAG_FILE) {
+                Write-Log -Level "Information" -Message "Main power has been restored. Cancelling shutdown countdown."
+                Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
             }
+            # Always report that the client is online and healthy on every successful run when power is OL
+            Send-StatusUpdate -Status "online"
+        }
+        # Handle other statuses (OB without LB, etc.)
+        else {
+            if (Test-Path $FLAG_FILE) {
+                Write-Log -Level "Information" -Message "UPS status changed to '$CurrentStatus'. Cancelling any pending shutdown."
+                Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
+                Send-StatusUpdate -Status "online"
+            }
+        }
+
+        # Sleep between iterations, but not after the last one
+        if ($i -lt $CHECK_ITERATIONS) {
+            Start-Sleep -Seconds $CHECK_INTERVAL
         }
     }
 }
-# Handle power restoration and normal online status
-elseif ($CurrentStatus -eq "OL") {
-    if (Test-Path $FLAG_FILE) {
-        Write-Log -Level "Information" -Message "Main power has been restored. Cancelling shutdown countdown."
-        Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue
-    }
-    # Always report that the client is online and healthy on every successful run when power is OL
-    Send-StatusUpdate -Status "online"
-}
-# Handle other statuses (OB without LB, etc.) 
-else {
-    if (Test-Path $FLAG_FILE) {
-        Write-Log -Level "Information" -Message "UPS status changed to '$CurrentStatus'. Cancelling any pending shutdown."
-        Remove-Item $FLAG_FILE -ErrorAction SilentlyContinue        
-        # Send-StatusUpdate -Status "online" - cancelling
-        Send-StatusUpdate -Status "online"
-    }
+finally {
+    # Always clean up lock file when the script exits
+    Remove-Item $LockFile -ErrorAction SilentlyContinue
 }
 
 Exit 0
